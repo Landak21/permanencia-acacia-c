@@ -1,0 +1,971 @@
+<!DOCTYPE html>
+<!--
+  SIS-MEDIA-PERMANENCIA-APP · V1.0 · 24 de noviembre de 2026
+  Registro de jornada docente de Educación Media · Colegio Acacia II IED (se publica como index.html en GitHub Pages)
+  Habla con SIS-MEDIA-PERMANENCIA-API V1.x. Especificación: SIS-MEDIA-PERMANENCIA-ESPECIFICACION_V1.1_20261124.
+  Sigue NOR-MEDIA-ESTANDAR-SCRIPTS: lo único que se edita es la sección 1 (AJUSTES), justo abajo.
+  Módulo M1: primera vez (instalar, código, autorización, ubicación), marcar entrada, salida y traslado con la sede
+  sugerida por el GPS, cola sin conexión, deshacer, «¿Quién está dónde?» y Ajustes (probar ubicación).
+  Va con manifest.webmanifest, sw.js y los íconos, en la raíz del mismo repositorio.
+-->
+<html lang="es">
+<head>
+    <!-- ═══════════════ 1. AJUSTES (lo único que se edita a mano) ═══════════════ -->
+    <script>
+        const CONFIG = Object.freeze({
+            // 1) URL del servidor: en Apps Script, Implementar › Administrar implementaciones › «URL de la aplicación web».
+            //    Pegue la URL completa entre las comillas. Termina en /exec. Si se publica una versión nueva con el lápiz,
+            //    la URL no cambia y no hay que tocar esto.
+            SCRIPT_URL: '',
+
+            // 2) Versión mínima del servidor con la que esta app funciona. No modificar.
+            VERSION_API_REQUERIDA: '1.0.0',
+
+            // 3) Marcas que viajan en cada envío de la cola (lotes pequeños = menos fallos con señal débil).
+            MARCAS_POR_ENVIO: 10,
+
+            // 4) Segundos que se espera al GPS. Con una precisión de PRECISION_BUENA_M o mejor, no se espera más.
+            SEGUNDOS_GPS: 15,
+            PRECISION_BUENA_M: 30,
+
+            VERSION_APP: '1.0.0'
+        });
+    </script>
+    <!-- ═══════════════════════ FIN DE LOS AJUSTES ═══════════════════════ -->
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#861A3A">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Jornada Media">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+    <link rel="icon" href="icono-192.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+    <title>Registro de jornada · Media</title>
+    <style>
+        :root {
+            --vino: #861A3A; --vino-oscuro: #5C1027; --tinte: #F6E9EE; --tinta: #1E2126; --gris: #555B63; --linea: #B9BEC5;
+            --fondo: #F5F3F4; --verde: #1D6B35; --verde-fondo: #E3F1E7; --ambar: #856404; --ambar-fondo: #FFF3CD; --rojo: #A3172B; --rojo-fondo: #FBE9EC;
+        }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; height: 100%; }
+        body { font-family: 'Public Sans', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: var(--tinta); background: var(--fondo);
+               -webkit-text-size-adjust: 100%; }
+        button { font-family: inherit; }
+        .oculto { display: none !important; }
+
+        /* Pantallas de primera vez */
+        .pantalla { position: fixed; inset: 0; background: var(--vino); color: #fff; display: flex; flex-direction: column; align-items: center;
+                    overflow-y: auto; padding: calc(28px + env(safe-area-inset-top)) 22px calc(24px + env(safe-area-inset-bottom)); z-index: 50; }
+        .pantalla .contenido { width: 100%; max-width: 420px; margin: auto 0; }
+        .pantalla .escudo { width: 84px; height: 84px; display: block; margin: 0 auto 10px; background: #fff; border-radius: 50%; padding: 8px; object-fit: contain; }
+        .pantalla h1 { font-size: 22px; margin: 6px 0 4px; text-align: center; }
+        .pantalla .sub { text-align: center; font-size: 14px; opacity: .85; margin: 0 0 22px; }
+        .pantalla p, .pantalla li { font-size: 15px; line-height: 1.5; }
+        .pantalla ol { padding-left: 22px; margin: 8px 0 16px; }
+        .pantalla .caja { background: rgba(255,255,255,.1); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+        .pantalla .caja b { display: block; margin-bottom: 4px; }
+        .pantalla .texto-legal { background: #fff; color: var(--tinta); border-radius: 12px; padding: 16px; font-size: 15px; line-height: 1.55; }
+        .campo-codigo { width: 100%; font-size: 18px; padding: 14px; text-align: center; letter-spacing: 1px; border-radius: 10px; border: none;
+                        margin: 10px 0 14px; text-transform: uppercase; font-family: ui-monospace, Menlo, Consolas, monospace; }
+        .btn-blanco { display: block; width: 100%; background: #fff; color: var(--vino); border: none; border-radius: 26px; padding: 15px;
+                      font-size: 17px; font-weight: 700; cursor: pointer; }
+        .btn-blanco:disabled { opacity: .6; }
+        .btn-borde-blanco { display: block; width: 100%; background: none; border: 1px solid rgba(255,255,255,.6); color: #fff; border-radius: 26px;
+                            padding: 12px; font-size: 15px; margin-top: 12px; cursor: pointer; }
+        .msg-pantalla { min-height: 22px; margin-top: 12px; font-size: 14px; color: #FFD3DA; text-align: center; white-space: pre-line; }
+        .pie-pantalla { margin-top: 26px; font-size: 11px; opacity: .6; letter-spacing: 1px; text-transform: uppercase; text-align: center; }
+
+        /* App */
+        #app { display: flex; flex-direction: column; height: 100%; }
+        header { flex-shrink: 0; background: var(--vino); color: #fff; padding: calc(12px + env(safe-area-inset-top)) 16px 12px;
+                 display: flex; align-items: center; gap: 10px; }
+        header img { width: 38px; height: 38px; background: #fff; border-radius: 50%; padding: 3px; object-fit: contain; }
+        header .titulo { flex: 1; min-width: 0; }
+        header .titulo b { display: block; font-size: 16px; }
+        header .titulo span { display: block; font-size: 13px; opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .btn-ajustes { background: none; border: 1px solid rgba(255,255,255,.55); color: #fff; border-radius: 16px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+        main { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 16px 16px 24px; }
+        body.con-toast main { padding-bottom: 110px; }   /* el aviso de «Deshacer» nunca tapa lo último de la lista */
+        .vista { max-width: 520px; margin: 0 auto; }
+        nav { flex-shrink: 0; display: flex; background: #fff; border-top: 1px solid #E3E0E1; padding-bottom: env(safe-area-inset-bottom); }
+        nav button { flex: 1; background: none; border: none; padding: 12px 4px 10px; font-size: 13px; font-weight: 600; color: var(--gris);
+                     border-top: 3px solid transparent; cursor: pointer; }
+        nav button.activa { color: var(--vino); border-top-color: var(--vino); }
+
+        .tarjeta { background: #fff; border-radius: 14px; padding: 16px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+        .estado-dia { font-size: 13px; color: var(--gris); margin-bottom: 4px; }
+        .estado-texto { font-size: 21px; font-weight: 700; line-height: 1.3; }
+        .estado-texto.en-sede { color: var(--verde); }
+        .estado-texto.en-traslado { color: var(--vino); }
+        .btn-principal { display: block; width: 100%; min-height: 58px; background: var(--vino); color: #fff; border: none; border-radius: 14px;
+                         font-size: 18px; font-weight: 700; margin-top: 14px; cursor: pointer; }
+        .btn-principal:disabled { background: #C9A3B0; }
+        .btn-secundario { display: block; width: 100%; min-height: 48px; background: #fff; color: var(--vino); border: 1.5px solid var(--vino);
+                          border-radius: 14px; font-size: 16px; font-weight: 600; margin-top: 10px; cursor: pointer; }
+        .btn-texto { background: none; border: none; color: var(--vino); font-size: 15px; font-weight: 600; padding: 10px 0; cursor: pointer; text-decoration: underline; }
+        .aviso { border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; font-size: 14px; line-height: 1.45; }
+        .aviso.ambar { background: var(--ambar-fondo); color: var(--ambar); }
+        .aviso.rojo { background: var(--rojo-fondo); color: var(--rojo); }
+        .aviso.vino { background: var(--tinte); color: var(--vino-oscuro); }
+        .aviso button { margin-top: 8px; background: none; border: 1px solid currentColor; color: inherit; border-radius: 14px; padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; }
+        h2 { font-size: 15px; margin: 0 0 10px; color: var(--vino-oscuro); }
+        .linea-marca { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid #EEE; font-size: 15px; }
+        .linea-marca:last-child { border-bottom: none; }
+        .linea-marca .hora { color: var(--gris); white-space: nowrap; }
+        .linea-marca .pend { color: var(--ambar); font-size: 13px; }
+        details.quien summary { font-weight: 700; color: var(--vino-oscuro); cursor: pointer; font-size: 15px; list-style: none; }
+        details.quien summary::-webkit-details-marker { display: none; }
+        details.quien summary::after { content: ' ▾'; }
+        details.quien[open] summary::after { content: ' ▴'; }
+        .persona { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid #EEE; font-size: 15px; }
+        .persona:last-child { border-bottom: none; }
+        .persona .donde { color: var(--gris); text-align: right; }
+        .persona .donde.sede { color: var(--verde); }
+        .nota { font-size: 12px; color: var(--gris); margin-top: 8px; }
+        .vacio { color: var(--gris); font-size: 14px; }
+        .pie { text-align: center; font-size: 11px; color: #9A9EA5; letter-spacing: 1px; text-transform: uppercase; margin: 24px 0 6px; }
+
+        /* Hoja inferior (modal) */
+        .fondo-modal { position: fixed; inset: 0; background: rgba(30,33,38,.45); z-index: 60; display: flex; align-items: flex-end; justify-content: center; }
+        .hoja { background: #fff; width: 100%; max-width: 520px; border-radius: 18px 18px 0 0; padding: 20px 18px calc(20px + env(safe-area-inset-bottom));
+                max-height: 92vh; overflow-y: auto; }
+        .hoja h3 { margin: 0 0 6px; font-size: 19px; }
+        .hoja .detalle { color: var(--gris); font-size: 14px; margin: 0 0 10px; line-height: 1.45; }
+        .ubic { background: var(--fondo); border-radius: 10px; padding: 10px 12px; font-size: 14px; margin: 10px 0; color: var(--tinta); }
+        .ubic.buscando::before { content: ''; display: inline-block; width: 12px; height: 12px; border: 2px solid var(--vino); border-right-color: transparent;
+                                 border-radius: 50%; margin-right: 8px; vertical-align: -1px; animation: gira 0.9s linear infinite; }
+        @keyframes gira { to { transform: rotate(360deg); } }
+        .sedes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+        .sedes button { min-height: 54px; border-radius: 12px; border: 1.5px solid var(--vino); background: #fff; color: var(--vino); font-size: 16px; font-weight: 700; cursor: pointer; }
+        .sedes button.sugerida { background: var(--vino); color: #fff; }
+        .etiqueta { font-size: 13px; color: var(--gris); margin-top: 14px; }
+        dl.datos { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 14px; margin: 10px 0; }
+        dl.datos dt { color: var(--gris); }
+        dl.datos dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+
+        /* Aviso inferior con «Deshacer» */
+        .toast { position: fixed; left: 12px; right: 12px; bottom: calc(76px + env(safe-area-inset-bottom)); max-width: 496px; margin: 0 auto;
+                 background: var(--tinta); color: #fff; border-radius: 12px; padding: 12px 14px; display: flex; align-items: center; gap: 12px;
+                 z-index: 55; box-shadow: 0 4px 14px rgba(0,0,0,.25); font-size: 15px; }
+        .toast span { flex: 1; }
+        .toast button { background: none; border: 1px solid rgba(255,255,255,.7); color: #fff; border-radius: 14px; padding: 6px 12px; font-weight: 700; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+<!-- ═══ Primera vez: instalar ═══ -->
+<section id="pInstalar" class="pantalla oculto" aria-labelledby="tInstalar">
+    <div class="contenido">
+        <img class="escudo" src="escudo.png" alt="Escudo del Colegio Acacia II">
+        <h1 id="tInstalar">Primero, instale la app</h1>
+        <p class="sub">Colegio Acacia II IED · Educación Media</p>
+        <p>Instálela en la pantalla de inicio antes de activarla. En el iPhone, Safari y la app instalada guardan sus datos por separado: si la activa aquí y la instala después, tendría que empezar de nuevo.</p>
+        <div class="caja" id="instrIphone"><b>En iPhone (Safari)</b>Toque el botón Compartir (el cuadro con la flecha hacia arriba) › <i>Agregar a inicio</i> › <i>Agregar</i>. Luego abra la app desde el ícono nuevo.</div>
+        <div class="caja" id="instrAndroid"><b>En Android (Chrome)</b>Toque el menú ⋮ › <i>Instalar app</i> o <i>Agregar a la pantalla principal</i>. Luego ábrala desde el ícono nuevo.</div>
+        <button class="btn-borde-blanco" id="btnSinInstalar">Continuar sin instalar</button>
+        <div class="pie-pantalla">Registro de jornada · Media</div>
+    </div>
+</section>
+
+<!-- ═══ Primera vez: código ═══ -->
+<section id="pCodigo" class="pantalla oculto" aria-labelledby="tCodigo">
+    <div class="contenido">
+        <img class="escudo" src="escudo.png" alt="Escudo del Colegio Acacia II">
+        <h1 id="tCodigo">Registro de jornada</h1>
+        <p class="sub">Colegio Acacia II IED · Educación Media</p>
+        <p style="text-align:center">Escriba el código personal que le entregó un administrador del sistema. Se hace una sola vez y necesita internet.</p>
+        <input id="campoCodigo" class="campo-codigo" type="text" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" maxlength="29" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Código personal">
+        <button class="btn-blanco" id="btnActivar">Activar</button>
+        <div class="msg-pantalla" id="msgCodigo" role="alert"></div>
+        <div class="pie-pantalla">Registro de jornada · Media</div>
+    </div>
+</section>
+
+<!-- ═══ Primera vez: autorización de datos ═══ -->
+<section id="pAutorizacion" class="pantalla oculto" aria-labelledby="tAutorizacion">
+    <div class="contenido">
+        <h1 id="tAutorizacion">Autorización de datos</h1>
+        <p class="sub">Ley 1581 de 2012 · versión <span id="verAutorizacion"></span></p>
+        <div class="texto-legal" id="textoAutorizacion"></div>
+        <button class="btn-blanco" id="btnAcepto" style="margin-top:18px">Acepto</button>
+        <div class="msg-pantalla" id="msgAutorizacion" role="alert"></div>
+    </div>
+</section>
+
+<!-- ═══ Primera vez: ubicación ═══ -->
+<section id="pUbicacion" class="pantalla oculto" aria-labelledby="tUbicacion">
+    <div class="contenido">
+        <h1 id="tUbicacion">Para qué se usa la ubicación</h1>
+        <div class="caja"><b>Solo cuando usted marca</b>La app mira la ubicación del celular en el momento en que toca un botón, para sugerir en qué sede está. No sigue su recorrido ni la mira con la app cerrada.</div>
+        <div class="caja"><b>Usted confirma</b>La sede sugerida siempre la confirma o la cambia usted. Si no da el permiso, puede marcar igual eligiendo la sede.</div>
+        <div class="caja"><b>Qué pasa ahora</b>El celular le preguntará si permite la ubicación a esta app. Elija <i>Permitir</i> (en iPhone, «Permitir mientras se usa la app»).</div>
+        <button class="btn-blanco" id="btnUbicacion">Continuar</button>
+        <div class="msg-pantalla" id="msgUbicacion" role="alert"></div>
+    </div>
+</section>
+
+<!-- ═══ App ═══ -->
+<div id="app" class="oculto">
+    <header>
+        <img src="escudo.png" alt="">
+        <div class="titulo"><b>Registro de jornada · Media</b><span id="lblPersona"></span></div>
+        <button class="btn-ajustes" id="btnAjustes">Ajustes</button>
+    </header>
+    <main id="principal">
+        <div class="vista" id="vInicio"></div>
+        <div class="vista oculto" id="vActividades"></div>
+        <div class="vista oculto" id="vNovedades"></div>
+        <div class="vista oculto" id="vResumen"></div>
+        <div class="vista oculto" id="vEquipo"></div>
+    </main>
+    <nav id="nav">
+        <button data-vista="Inicio" class="activa">Inicio</button>
+        <button data-vista="Actividades">Actividades</button>
+        <button data-vista="Novedades">Novedades</button>
+        <button data-vista="Resumen">Mi resumen</button>
+        <button data-vista="Equipo" class="oculto" id="navEquipo">Equipo</button>
+    </nav>
+</div>
+
+<div id="modal" class="fondo-modal oculto" role="dialog" aria-modal="true"><div class="hoja" id="hoja"></div></div>
+<div id="toast" class="toast oculto" role="status"><span id="toastTexto"></span><button id="toastBoton">Deshacer</button></div>
+
+<script>
+'use strict';
+
+/* ════════════════════════════════════════════════════════════════════
+ *  1. ALMACENAMIENTO LOCAL (solo lo de esta persona; nada de otros)
+ * ══════════════════════════════════════════════════════════════════ */
+const CLAVES = Object.freeze({
+    CODIGO: 'perm_codigo', SESION: 'perm_sesion', COLA: 'perm_cola', RECHAZADAS: 'perm_rechazadas',
+    ENVIADAS: 'perm_enviadas', DESFASE: 'perm_desfase', ESTADO: 'perm_estado',
+    SIN_INSTALAR: 'perm_sin_instalar', UBICACION_EXPLICADA: 'perm_ubicacion_explicada'
+});
+function leerLS(clave, porDefecto) {
+    const crudo = localStorage.getItem(clave);
+    if (crudo === null) return porDefecto;
+    try { return JSON.parse(crudo); } catch (_) { return porDefecto; }
+}
+function guardarLS(clave, valor) {
+    try { localStorage.setItem(clave, JSON.stringify(valor)); return true; } catch (_) { return false; }
+}
+
+let codigo = leerLS(CLAVES.CODIGO, '');
+let sesion = leerLS(CLAVES.SESION, null);          // { persona, sedes, config, autorizacion, version }
+let cola = leerLS(CLAVES.COLA, []);                // marcas sin confirmar por el servidor
+let rechazadas = leerLS(CLAVES.RECHAZADAS, []);    // marcas que el servidor no aceptó, con su motivo
+let enviadas = leerLS(CLAVES.ENVIADAS, []);        // { id, creada } de las últimas marcas confirmadas (para deshacer)
+let desfase = leerLS(CLAVES.DESFASE, null);        // segundos: hora del servidor − hora del celular
+let estadoServidor = leerLS(CLAVES.ESTADO, null);  // última respuesta de 'estado'
+let enviando = false;
+let ultimoEstado = 0;
+let vistaActual = 'Inicio';
+
+/* ════════════════════════════════════════════════════════════════════
+ *  2. UTILIDADES
+ * ══════════════════════════════════════════════════════════════════ */
+const $ = id => document.getElementById(id);
+const aTexto = v => (v === null || v === undefined) ? '' : String(v).trim();
+function el(tag, clase, texto) {
+    const e = document.createElement(tag);
+    if (clase) e.className = clase;
+    if (texto !== undefined) e.textContent = texto;
+    return e;
+}
+function nuevoId() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    const b = new Uint8Array(16); crypto.getRandomValues(b);
+    return Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+}
+function normalizarCodigo(t) {
+    const limpio = aTexto(t).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    return limpio.length === 20 ? limpio.match(/.{4}/g).join('-') : '';
+}
+function fechaLocalISO(d) {
+    d = d || new Date();
+    const dos = n => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + dos(d.getMonth() + 1) + '-' + dos(d.getDate());
+}
+const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+/** «2026-11-25» → «miércoles 25 de noviembre» (NOR-MEDIA-IDENTIDAD-GUIA: fechas en texto). */
+function fechaLarga(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(aTexto(iso));
+    if (!m) return aTexto(iso);
+    const d = new Date(+m[1], +m[2] - 1, +m[3]);
+    return DIAS[d.getDay()] + ' ' + (+m[3]) + ' de ' + MESES[+m[2] - 1];
+}
+/** «14:05» → «2:05 p. m.» */
+function horaTexto(hhmm) {
+    const m = /^(\d{1,2}):(\d{2})/.exec(aTexto(hhmm));
+    if (!m) return aTexto(hhmm);
+    const h = +m[1];
+    return ((h % 12) || 12) + ':' + m[2] + (h < 12 ? '\u00a0a.\u00a0m.' : '\u00a0p.\u00a0m.');   // sin partir la hora entre renglones
+}
+function horaDeMs(ms) { const d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
+function nombreSede(id) {
+    const s = (sesion && sesion.sedes || []).find(x => x.id === id);
+    return s ? s.nombre : 'Sede ' + id;
+}
+function laSede(id) { return 'la ' + nombreSede(id).replace(/ (\S+)$/, '\u00a0$1'); }   // «Sede C» no se parte
+function esMovil() {
+    return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+function esIOS() { return /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); }
+function instalada() { return (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true; }
+function versionCompatible(actual, requerida) {
+    const a = aTexto(actual).split('.').map(Number), r = requerida.split('.').map(Number);
+    return a.length === 3 && a[0] === r[0] && (a[1] > r[1] || (a[1] === r[1] && a[2] >= r[2]));
+}
+function cfg() { return (sesion && sesion.config) || { precision_max_m: 150, minutos_deshacer: 2, reloj_max_min: 5 }; }
+
+/* ════════════════════════════════════════════════════════════════════
+ *  3. REGLA DE SEDE (la misma del servidor, letra por letra)
+ * ══════════════════════════════════════════════════════════════════ */
+// <regla-sede> — IDÉNTICA en SIS-MEDIA-PERMANENCIA-API y SIS-MEDIA-PERMANENCIA-APP (las pruebas lo comprueban).
+function distanciaMetrosPermanencia(lat1, lon1, lat2, lon2) {
+  var R = 6371000, rad = Math.PI / 180;
+  var dLat = (lat2 - lat1) * rad, dLon = (lon2 - lon1) * rad;
+  var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+/**
+ * Sede que se sugiere (especificación, 4.5). Una sede es posible si d − p ≤ radio. Se sugiere solo si hay
+ * exactamente una posible y la precisión no supera el tope; si no, la persona elige entre los botones.
+ */
+function sugerirSedePermanencia(lat, lon, precision, sedes, precisionMax) {
+  if (typeof lat !== 'number' || typeof lon !== 'number' || !isFinite(lat) || !isFinite(lon)) {
+    return { sede: '', motivo: 'SIN_UBICACION', posibles: [] };
+  }
+  var p = (typeof precision === 'number' && isFinite(precision) && precision >= 0) ? precision : Infinity;
+  var posibles = [];
+  for (var i = 0; i < sedes.length; i++) {
+    var d = distanciaMetrosPermanencia(lat, lon, sedes[i].latitud, sedes[i].longitud);
+    if (d - p <= sedes[i].radio_m) posibles.push({ id: sedes[i].id, distancia_m: Math.round(d) });
+  }
+  if (p > precisionMax) return { sede: '', motivo: 'PRECISION', posibles: posibles };
+  if (posibles.length === 1) return { sede: posibles[0].id, motivo: 'UNICA', posibles: posibles };
+  return { sede: '', motivo: posibles.length ? 'AMBIGUA' : 'NINGUNA', posibles: posibles };
+}
+// </regla-sede>
+
+/* ════════════════════════════════════════════════════════════════════
+ *  4. CONEXIÓN CON EL SERVIDOR
+ *  Todo viaja por POST con text/plain: sin verificación CORS previa y el código nunca queda en una URL.
+ *  Cada respuesta trae la hora del servidor: con ella se mide el desfase del reloj del celular.
+ * ══════════════════════════════════════════════════════════════════ */
+async function llamar(cuerpo, opciones) {
+    opciones = opciones || {};
+    if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(CONFIG.SCRIPT_URL)) throw new Error('SIN_SERVIDOR');
+    const control = new AbortController();
+    const reloj = setTimeout(() => control.abort(), 25000);
+    const t0 = Date.now();
+    let resp, texto;
+    try {
+        resp = await fetch(CONFIG.SCRIPT_URL, { method: 'POST', redirect: 'follow', signal: control.signal,
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(Object.assign({ codigo }, cuerpo)) });
+        texto = await resp.text();
+    } catch (_) {
+        throw new Error('SIN_RED');
+    } finally { clearTimeout(reloj); }
+    const t1 = Date.now();
+    let r;
+    try { r = JSON.parse(texto); } catch (_) {
+        throw new Error(/accounts\.google\.com|ServiceLogin/i.test((resp && resp.url) || '') || /accounts\.google\.com/i.test(texto) ? 'SERVIDOR_SIN_ACCESO' : 'RESPUESTA_INVALIDA');
+    }
+    if (typeof r.hora_servidor === 'number') {
+        desfase = Math.round((r.hora_servidor - (t0 + t1) / 2) / 1000);
+        guardarLS(CLAVES.DESFASE, desfase);
+    }
+    if (r.version && !versionCompatible(r.version, CONFIG.VERSION_API_REQUERIDA)) {
+        throw new Error(Number(aTexto(r.version).split('.')[0]) > Number(CONFIG.VERSION_API_REQUERIDA.split('.')[0]) ? 'APP_VIEJA' : 'SERVIDOR_VIEJO');
+    }
+    if (r.codigo === 'NO_AUTORIZADO') {
+        // Al activar, un código equivocado no debe borrar la sesión que ya existe en el celular.
+        if (!opciones.activando) codigoRevocado();
+        throw new Error('CODIGO_REVOCADO');
+    }
+    if (r.codigo === 'AUTORIZACION_PENDIENTE' && sesion) {
+        sesion.autorizacion.aceptada = false; guardarLS(CLAVES.SESION, sesion); siguientePantalla();
+    }
+    return r;
+}
+
+function explicarError(err) {
+    switch (err && err.message) {
+        case 'SIN_RED': return 'No hay conexión con el colegio. Lo que marque queda guardado en el celular.';
+        case 'SIN_SERVIDOR': return 'La app todavía no está conectada al servidor. Avise a un administrador del sistema.';
+        case 'RESPUESTA_INVALIDA': return 'El servidor respondió algo que la app no entiende. Lo marcado sigue guardado en el celular.';
+        case 'SERVIDOR_SIN_ACCESO': return 'El servidor no está abierto a la app (la publicación quedó con un acceso distinto de «Cualquier usuario»). Avise a un administrador.';
+        case 'APP_VIEJA': return 'Hay una versión nueva de la app. Ciérrela por completo y vuelva a abrirla. Lo que tenga guardado no se pierde.';
+        case 'SERVIDOR_VIEJO': return 'El servidor no está actualizado. Avise a un administrador del sistema.';
+        case 'CODIGO_REVOCADO': return 'Su código fue revocado o cambiado. Lo que tenga guardado en el celular no se pierde: active el código nuevo.';
+        default: return aTexto(err && err.message) || 'Error desconocido.';
+    }
+}
+
+/** Código revocado: se olvida la sesión, pero la cola se conserva para enviarla con el código nuevo. */
+function codigoRevocado() {
+    codigo = ''; sesion = null; estadoServidor = null;
+    localStorage.removeItem(CLAVES.CODIGO); localStorage.removeItem(CLAVES.SESION); localStorage.removeItem(CLAVES.ESTADO);
+    setTimeout(() => mostrarPantalla('pCodigo', 'Su código fue revocado o cambiado. Active el código nuevo: lo que tenga guardado en el celular no se pierde.'), 0);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ *  5. PRIMERA VEZ: instalar → código → autorización → ubicación → app
+ * ══════════════════════════════════════════════════════════════════ */
+const PANTALLAS = ['pInstalar', 'pCodigo', 'pAutorizacion', 'pUbicacion'];
+function mostrarPantalla(id, mensaje) {
+    PANTALLAS.forEach(p => $(p).classList.toggle('oculto', p !== id));
+    $('app').classList.toggle('oculto', id !== 'app');
+    if (id === 'pCodigo') { $('msgCodigo').textContent = mensaje || ''; }
+    if (id === 'pAutorizacion') {
+        $('textoAutorizacion').textContent = sesion.autorizacion.texto;
+        $('verAutorizacion').textContent = sesion.autorizacion.version;
+        $('msgAutorizacion').textContent = mensaje || '';
+    }
+    if (id === 'pInstalar') {
+        $('instrIphone').classList.toggle('oculto', !esIOS());
+        $('instrAndroid').classList.toggle('oculto', esIOS());
+    }
+    if (id === 'app') iniciarApp();
+}
+
+function siguientePantalla() {
+    if (!codigo || !sesion) {
+        if (esMovil() && !instalada() && !leerLS(CLAVES.SIN_INSTALAR, false)) return mostrarPantalla('pInstalar');
+        return mostrarPantalla('pCodigo', CONFIG.SCRIPT_URL ? '' : explicarError(new Error('SIN_SERVIDOR')));
+    }
+    if (!sesion.autorizacion || !sesion.autorizacion.aceptada) return mostrarPantalla('pAutorizacion');
+    if (!leerLS(CLAVES.UBICACION_EXPLICADA, false)) return mostrarPantalla('pUbicacion');
+    mostrarPantalla('app');
+}
+
+$('btnSinInstalar').onclick = () => { guardarLS(CLAVES.SIN_INSTALAR, true); siguientePantalla(); };
+$('campoCodigo').addEventListener('keydown', e => { if (e.key === 'Enter') activar(); });
+$('btnActivar').onclick = activar;
+
+async function activar() {
+    const nuevo = normalizarCodigo($('campoCodigo').value);
+    const btn = $('btnActivar');
+    if (!nuevo) { $('msgCodigo').textContent = 'El código tiene 20 letras y números. Revíselo e intente de nuevo.'; return; }
+    if (btn.disabled) return;
+    btn.disabled = true; btn.textContent = 'Verificando…'; $('msgCodigo').textContent = '';
+    const anterior = codigo;
+    codigo = nuevo;
+    try {
+        const r = await llamar({ accion: 'sesion' }, { activando: true });
+        if (!r.ok) throw new Error(r.error || 'El servidor no respondió correctamente.');
+        guardarSesion(r);
+        guardarLS(CLAVES.CODIGO, codigo);
+        $('campoCodigo').value = '';
+        siguientePantalla();
+        refrescarEstado(true);
+    } catch (err) {
+        codigo = anterior;
+        $('msgCodigo').textContent = err.message === 'CODIGO_REVOCADO' ? 'Código inválido o revocado. Revíselo o pida uno nuevo.' : explicarError(err);
+    } finally { btn.disabled = false; btn.textContent = 'Activar'; }
+}
+
+function guardarSesion(r) {
+    sesion = { persona: r.persona, sedes: r.sedes || [], config: r.config || {}, autorizacion: r.autorizacion, version: r.version };
+    guardarLS(CLAVES.SESION, sesion);
+}
+
+$('btnAcepto').onclick = async () => {
+    const btn = $('btnAcepto');
+    btn.disabled = true; btn.textContent = 'Guardando…';
+    try {
+        const r = await llamar({ accion: 'aceptar_autorizacion', version_autorizacion: sesion.autorizacion.version });
+        if (r.codigo === 'AUTORIZACION_CAMBIO') {
+            const s = await llamar({ accion: 'sesion' });
+            if (s.ok) guardarSesion(s);
+            return mostrarPantalla('pAutorizacion', 'El texto cambió. Léalo de nuevo, por favor.');
+        }
+        if (!r.ok) throw new Error(r.error || 'No se pudo guardar.');
+        sesion.autorizacion.aceptada = true;
+        guardarLS(CLAVES.SESION, sesion);
+        siguientePantalla();
+        enviarCola();
+    } catch (err) {
+        $('msgAutorizacion').textContent = explicarError(err);
+    } finally { btn.disabled = false; btn.textContent = 'Acepto'; }
+};
+
+$('btnUbicacion').onclick = () => {
+    const seguir = () => { guardarLS(CLAVES.UBICACION_EXPLICADA, true); siguientePantalla(); };
+    if (!navigator.geolocation) return seguir();
+    $('btnUbicacion').disabled = true; $('btnUbicacion').textContent = 'Esperando su respuesta…';
+    navigator.geolocation.getCurrentPosition(seguir, err => {
+        if (err && err.code === 1) {
+            $('msgUbicacion').textContent = 'Sin permiso de ubicación. Puede marcar igual eligiendo la sede. Para activarlo después: Ajustes del celular › esta app (o el navegador) › Ubicación.';
+            setTimeout(seguir, 3500);
+        } else seguir();
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+};
+
+/* ════════════════════════════════════════════════════════════════════
+ *  6. ESTADO DEL DÍA (lo del servidor + lo que está en la cola)
+ * ══════════════════════════════════════════════════════════════════ */
+/** Misma lógica del servidor: la última marca del día manda. */
+function estadoDesde(marcas) {
+    const u = marcas[marcas.length - 1];
+    if (!u) return { estado: 'FUERA', lugar: '', destino: '', desde: '' };
+    if (u.tipo === 'ENTRADA') return { estado: 'EN_SEDE', lugar: u.lugar, destino: '', desde: u.hora };
+    if (u.motivo === 'TRASLADO') return { estado: 'EN_TRASLADO', lugar: u.lugar, destino: u.destino, desde: u.hora };
+    return { estado: 'FUERA', lugar: u.lugar, destino: '', desde: u.hora };
+}
+
+function colaPropia() { return cola.filter(m => sesion && m.persona === sesion.persona.id); }
+
+/** Marcas de hoy: las confirmadas por el servidor y, después, las que siguen en el celular. */
+function marcasDeHoy() {
+    const hoy = fechaLocalISO();
+    const servidor = (estadoServidor && estadoServidor.fecha === hoy ? estadoServidor.marcas_hoy : []) || [];
+    const ids = new Set(servidor.map(m => m.id));
+    const locales = colaPropia().filter(m => fechaLocalISO(new Date(m.hora_celular + (m.desfase_s || 0) * 1000)) === hoy && !ids.has(m.id_marca))
+        .map(m => ({ id: m.id_marca, tipo: m.tipo, lugar: m.lugar, motivo: m.motivo_salida || '', destino: m.destino || '',
+                     hora: horaDeMs(m.hora_celular + (m.desfase_s || 0) * 1000), pendiente: true }));
+    return servidor.map(m => Object.assign({ pendiente: false }, m)).concat(locales)
+        .sort((a, b) => a.hora < b.hora ? -1 : a.hora > b.hora ? 1 : 0);
+}
+
+async function refrescarEstado(forzar) {
+    if (!codigo || !sesion || !sesion.autorizacion.aceptada) return;
+    if (!forzar && Date.now() - ultimoEstado < 30000) return;
+    ultimoEstado = Date.now();
+    try {
+        const r = await llamar({ accion: 'estado' });
+        if (r.ok) aplicarEstado(r);
+    } catch (_) { /* sin red: se muestra lo guardado */ }
+}
+
+function aplicarEstado(r) {
+    estadoServidor = { fecha: r.fecha, mi_estado: r.mi_estado, marcas_hoy: r.marcas_hoy || [], quien_esta_donde: r.quien_esta_donde || [], recibido: Date.now() };
+    guardarLS(CLAVES.ESTADO, estadoServidor);
+    pintar();
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ *  7. COLA: lo marcado sale del celular solo cuando el servidor lo confirma
+ * ══════════════════════════════════════════════════════════════════ */
+async function enviarCola() {
+    if (enviando || !codigo || !sesion || !sesion.autorizacion.aceptada) return;
+    const propias = colaPropia();
+    if (!propias.length) return;
+    enviando = true;
+    pintar();
+    try {
+        for (let i = 0; i < propias.length; i += CONFIG.MARCAS_POR_ENVIO) {
+            const lote = propias.slice(i, i + CONFIG.MARCAS_POR_ENVIO).map(m => {
+                const { persona, ...resto } = m;
+                // «En línea» si sale en el primer minuto: entonces vale la hora del servidor.
+                return Object.assign({}, resto, { en_linea: Date.now() - m.hora_celular < 60000 });
+            });
+            const r = await llamar({ accion: 'marcar', marcas: lote, hora_envio_celular: Date.now(), version_app: CONFIG.VERSION_APP });
+            if (!r.ok) {
+                if (r.codigo === 'SERVIDOR_OCUPADO') setTimeout(enviarCola, 30000);
+                break;
+            }
+            const listas = new Set([].concat(r.confirmadas || [], r.duplicadas || []));
+            const malas = new Map((r.rechazadas || []).map(x => [x.id, x.motivo]));
+            const ahora = Date.now();
+            cola.filter(m => listas.has(m.id_marca)).forEach(m => enviadas.push({ id: m.id_marca, creada: m.hora_celular }));
+            enviadas = enviadas.filter(x => ahora - x.creada < 30 * 60000).slice(-30);
+            cola.filter(m => malas.has(m.id_marca)).forEach(m => rechazadas.push(Object.assign({}, m, { motivo: malas.get(m.id_marca) })));
+            cola = cola.filter(m => !listas.has(m.id_marca) && !malas.has(m.id_marca));
+            guardarLS(CLAVES.COLA, cola); guardarLS(CLAVES.ENVIADAS, enviadas); guardarLS(CLAVES.RECHAZADAS, rechazadas);
+            if (r.fecha) aplicarEstado(r);
+        }
+    } catch (_) {
+        /* sin red o error: la cola se queda; se reintenta al volver la señal o al abrir la app */
+    } finally {
+        enviando = false;
+        pintar();
+    }
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ *  8. UBICACIÓN: solo en el momento de marcar (o en «Probar ubicación»)
+ * ══════════════════════════════════════════════════════════════════ */
+/**
+ * Escucha el GPS hasta SEGUNDOS_GPS o hasta tener una precisión buena. alCambiar recibe la mejor lectura hasta ahora.
+ * Devuelve una función para detenerse antes y una promesa con el resultado final:
+ * { lat, lon, precision } o { error: 'DENEGADO' | 'NO_DISPONIBLE' | 'SIN_LECTURA' }.
+ */
+function escucharUbicacion(alCambiar) {
+    let mejor = null, id = null, fin;
+    const promesa = new Promise(resolver => {
+        fin = (r) => { if (id !== null) navigator.geolocation.clearWatch(id); id = null; clearTimeout(t); resolver(r || mejor || { error: 'SIN_LECTURA' }); };
+        if (!navigator.geolocation) return fin({ error: 'NO_DISPONIBLE' });
+        var t = setTimeout(() => fin(), CONFIG.SEGUNDOS_GPS * 1000);
+        id = navigator.geolocation.watchPosition(p => {
+            const l = { lat: p.coords.latitude, lon: p.coords.longitude, precision: p.coords.accuracy };
+            if (!mejor || l.precision < mejor.precision) { mejor = l; if (alCambiar) alCambiar(mejor); }
+            if (mejor.precision <= CONFIG.PRECISION_BUENA_M) fin();
+        }, err => { if (!mejor) fin({ error: err && err.code === 1 ? 'DENEGADO' : 'NO_DISPONIBLE' }); },
+        { enableHighAccuracy: true, maximumAge: 0, timeout: CONFIG.SEGUNDOS_GPS * 1000 });
+    });
+    return { promesa, detener: () => fin && fin() };
+}
+
+function textoUbicacion(u) {
+    if (!u) return 'Buscando su ubicación…';
+    if (u.error === 'DENEGADO') return 'Sin permiso de ubicación. Puede marcar igual eligiendo la sede.';
+    if (u.error) return 'No se pudo leer la ubicación. Puede marcar igual eligiendo la sede.';
+    return 'Ubicación leída · precisión ' + Math.round(u.precision) + ' m';
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ *  9. MARCAR
+ * ══════════════════════════════════════════════════════════════════ */
+function abrirHoja(construir) {
+    const hoja = $('hoja');
+    hoja.replaceChildren();
+    construir(hoja);
+    $('modal').classList.remove('oculto');
+}
+function cerrarHoja() { $('modal').classList.add('oculto'); $('hoja').replaceChildren(); if (gpsActivo) { gpsActivo.detener(); gpsActivo = null; } }
+$('modal').addEventListener('click', e => { if (e.target === $('modal')) cerrarHoja(); });
+let gpsActivo = null;
+
+/** Entrada en una sede (al empezar la jornada o al llegar de un traslado). esperada: la sede del traslado, si hay. */
+function flujoEntrada(esperada) {
+    let ubic = null, eligiendo = false;
+    abrirHoja(h => {
+        const titulo = el('h3', '', esperada ? 'Llegada a ' + laSede(esperada) : 'Marcar entrada');
+        const linea = el('div', 'ubic buscando', textoUbicacion(null));
+        const zona = el('div');
+        const cancelar = el('button', 'btn-texto', 'Cancelar');
+        cancelar.onclick = cerrarHoja;
+        h.append(titulo, linea, zona, cancelar);
+        const pintarHoja = () => {
+            const sug = ubic && !ubic.error ? sugerirSedePermanencia(ubic.lat, ubic.lon, ubic.precision, sesion.sedes, cfg().precision_max_m) : null;
+            linea.className = 'ubic' + (ubic ? '' : ' buscando');
+            linea.textContent = textoUbicacion(ubic) + (sug && sug.sede ? ' · la app la ubica en ' + laSede(sug.sede) : '');
+            zona.replaceChildren();
+            if (sug && sug.sede && !eligiendo) {
+                const b = el('button', 'btn-principal', 'Confirmar entrada en ' + laSede(sug.sede));
+                b.onclick = () => registrarEntrada(sug.sede, ubic);
+                const otra = el('button', 'btn-texto', 'Es otra sede');
+                otra.onclick = () => { eligiendo = true; pintarHoja(); };
+                zona.append(b, otra);
+                return;
+            }
+            const motivo = sug && !sug.sede ? ({ AMBIGUA: 'Está cerca de dos sedes: elija en cuál está.', NINGUNA: 'La ubicación no coincide con ninguna sede: elija en cuál está.',
+                PRECISION: 'La ubicación es poco precisa: elija la sede.' }[sug.motivo] || '') : (ubic ? '' : 'Puede elegir la sede sin esperar.');
+            if (motivo) zona.appendChild(el('p', 'detalle', motivo));
+            zona.appendChild(el('div', 'etiqueta', '¿En qué sede está?'));
+            const g = el('div', 'sedes');
+            sesion.sedes.forEach(s => {
+                const b = el('button', s.id === esperada ? 'sugerida' : '', s.nombre);
+                b.onclick = () => registrarEntrada(s.id, ubic);
+                g.appendChild(b);
+            });
+            zona.appendChild(g);
+        };
+        pintarHoja();
+        gpsActivo = escucharUbicacion(u => { ubic = u; pintarHoja(); });
+        gpsActivo.promesa.then(u => { if (!ubic || u.error) { ubic = u; } pintarHoja(); });
+    });
+}
+
+function registrarEntrada(sede, ubic) {
+    conUbicacion(ubic, u => registrarMarca({ tipo: 'ENTRADA', lugar: sede }, u));
+}
+
+/** Si la persona confirma antes de la primera lectura del GPS, se esperan hasta 5 segundos; después se marca sin ella. */
+async function conUbicacion(ubic, seguir) {
+    if (ubic || !gpsActivo) return seguir(ubic);
+    document.querySelectorAll('#hoja button').forEach(b => { b.disabled = true; });
+    const linea = document.querySelector('#hoja .ubic');
+    if (linea) linea.textContent = 'Leyendo la ubicación para guardarla con la marca…';
+    const u = await Promise.race([gpsActivo.promesa, new Promise(r => setTimeout(() => r(null), 5000))]);
+    seguir(u);
+}
+
+/** Salida de la sede actual: fin de jornada o traslado (con destino). La ubicación se guarda si llega; no se espera por ella. */
+function flujoSalida(lugar, traslado) {
+    let ubic = null, destino = '';
+    abrirHoja(h => {
+        h.appendChild(el('h3', '', traslado ? 'Ir a otra sede' : 'Marcar salida'));
+        h.appendChild(el('p', 'detalle', traslado ? 'Sale de ' + laSede(lugar) + '. ¿Hacia cuál sede va? Al llegar, marque «Llegué».'
+            : 'Salida de ' + laSede(lugar) + ', fin de la jornada.'));
+        const linea = el('div', 'ubic buscando', textoUbicacion(null));
+        h.appendChild(linea);
+        const zona = el('div');
+        h.appendChild(zona);
+        const cancelar = el('button', 'btn-texto', 'Cancelar');
+        cancelar.onclick = cerrarHoja;
+        h.appendChild(cancelar);
+        const pintarHoja = () => {
+            linea.className = 'ubic' + (ubic ? '' : ' buscando');
+            linea.textContent = textoUbicacion(ubic);
+            zona.replaceChildren();
+            if (traslado) {
+                const g = el('div', 'sedes');
+                sesion.sedes.filter(s => s.id !== lugar).forEach(s => {
+                    const b = el('button', s.id === destino ? 'sugerida' : '', s.nombre);
+                    b.onclick = () => { destino = s.id; pintarHoja(); };
+                    g.appendChild(b);
+                });
+                zona.appendChild(g);
+            }
+            const ok = el('button', 'btn-principal', traslado ? (destino ? 'Salir hacia ' + laSede(destino) : 'Elija la sede de destino') : 'Confirmar salida');
+            ok.disabled = traslado && !destino;
+            ok.onclick = () => conUbicacion(ubic, u => registrarMarca({ tipo: 'SALIDA', lugar, motivo_salida: traslado ? 'TRASLADO' : 'FIN_JORNADA', destino: traslado ? destino : '' }, u));
+            zona.appendChild(ok);
+        };
+        pintarHoja();
+        gpsActivo = escucharUbicacion(u => { ubic = u; pintarHoja(); });
+        gpsActivo.promesa.then(u => { if (!ubic || u.error) ubic = u; pintarHoja(); });
+    });
+}
+
+function registrarMarca(datos, ubic) {
+    const ok = ubic && !ubic.error;
+    const m = {
+        id_marca: nuevoId(), persona: sesion.persona.id, tipo: datos.tipo, lugar: datos.lugar,
+        motivo_salida: datos.motivo_salida || '', destino: datos.destino || '',
+        hora_celular: Date.now(), desfase_s: desfase,
+        latitud: ok ? ubic.lat : null, longitud: ok ? ubic.lon : null, precision_m: ok ? Math.round(ubic.precision) : null,
+        origen: esMovil() ? 'CELULAR' : 'COMPUTADOR'
+    };
+    const nueva = cola.concat([m]);
+    if (!guardarLS(CLAVES.COLA, nueva)) { alert('No se guardó: la memoria del celular está llena. Libere espacio e intente de nuevo.'); return; }
+    cola = nueva;
+    cerrarHoja();
+    const hora = horaTexto(horaDeMs(m.hora_celular + (desfase || 0) * 1000));
+    const texto = m.tipo === 'ENTRADA' ? 'Entrada registrada a las ' + hora + ' en ' + laSede(m.lugar)
+        : m.motivo_salida === 'TRASLADO' ? 'Salida hacia ' + laSede(m.destino) + ' a las ' + hora : 'Salida registrada a las ' + hora;
+    mostrarToast('✅ ' + texto + (texto.endsWith('.') ? '' : '.'), m.id_marca, m.hora_celular);
+    pintar();
+    enviarCola();
+}
+
+/* ── Deshacer: si la marca sigue en el celular se quita; si ya llegó, se le pide al servidor ── */
+let toastReloj = null;
+function mostrarToast(texto, idMarca, creada) {
+    $('toastTexto').textContent = texto;
+    const boton = $('toastBoton');
+    boton.classList.toggle('oculto', !idMarca);
+    boton.onclick = () => deshacer(idMarca);
+    $('toast').classList.remove('oculto');
+    document.body.classList.add('con-toast');
+    clearTimeout(toastReloj);
+    const ms = idMarca ? Math.max(4000, cfg().minutos_deshacer * 60000 - (Date.now() - creada) - 5000) : 5000;
+    toastReloj = setTimeout(ocultarToast, ms);
+}
+function ocultarToast() {
+    $('toast').classList.add('oculto');
+    document.body.classList.remove('con-toast');
+}
+
+async function deshacer(idMarca) {
+    ocultarToast();
+    if (cola.some(m => m.id_marca === idMarca)) {
+        cola = cola.filter(m => m.id_marca !== idMarca);
+        guardarLS(CLAVES.COLA, cola);
+        pintar();
+        return mostrarToast('Marca deshecha.', '', 0);
+    }
+    try {
+        const r = await llamar({ accion: 'deshacer', id_marca: idMarca });
+        if (!r.ok) return mostrarToast(r.error || 'No se pudo deshacer.', '', 0);
+        aplicarEstado(r);
+        mostrarToast('Marca deshecha.', '', 0);
+    } catch (err) {
+        mostrarToast(explicarError(err), '', 0);
+    }
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ *  10. PANTALLA PRINCIPAL
+ * ══════════════════════════════════════════════════════════════════ */
+function iniciarApp() {
+    $('lblPersona').textContent = sesion.persona.nombre;
+    $('navEquipo').classList.toggle('oculto', sesion.persona.rol !== 'DIRECTIVO');
+    cambiarVista(vistaActual);
+    enviarCola();
+    refrescarEstado(true);
+}
+
+document.querySelectorAll('#nav button').forEach(b => b.addEventListener('click', () => cambiarVista(b.dataset.vista)));
+function cambiarVista(v) {
+    vistaActual = v;
+    document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('activa', b.dataset.vista === v));
+    ['Inicio', 'Actividades', 'Novedades', 'Resumen', 'Equipo'].forEach(x => $('v' + x).classList.toggle('oculto', x !== v));
+    pintar();
+}
+
+const PROXIMAMENTE = {
+    Actividades: ['Actividades externas', 'Aquí se proponen las actividades fuera del colegio, Narda las autoriza y se marcan la llegada, la salida y las fotos. Llega con el módulo M3.'],
+    Novedades: ['Novedades', 'Aquí se registran permisos, incapacidades, licencias y compensatorios, sin motivo. Llega con el módulo M2.'],
+    Resumen: ['Mi resumen', 'Aquí verá sus horas de la semana y del mes, el calendario de sus días y sus alertas. Llega con el módulo M2.'],
+    Equipo: ['Equipo', 'Aquí estarán el tablero, las actividades por autorizar, las alertas y las correcciones. Llega con el módulo M4.']
+};
+
+function pintar() {
+    if (!sesion || $('app').classList.contains('oculto')) return;
+    if (vistaActual !== 'Inicio') {
+        const [t, d] = PROXIMAMENTE[vistaActual];
+        const caja = el('div', 'tarjeta');
+        caja.append(el('h2', '', t), el('p', 'vacio', d));
+        $('v' + vistaActual).replaceChildren(caja);
+        return;
+    }
+    const v = $('vInicio');
+    const frag = document.createDocumentFragment();
+    const hoy = fechaLocalISO();
+    const marcas = marcasDeHoy();
+    const est = estadoDesde(marcas);
+
+    // Avisos: lo que no ha salido del celular y lo que el servidor no aceptó
+    const pend = colaPropia().length;
+    if (pend) {
+        const a = el('div', 'aviso ambar');
+        a.append(el('div', '', '⏳ ' + (pend === 1 ? '1 marca por enviar' : pend + ' marcas por enviar') + (enviando ? ': enviando…' : '. Se envían cuando haya señal.')));
+        if (!enviando) { const b = el('button', '', 'Enviar ahora'); b.onclick = () => enviarCola(); a.appendChild(b); }
+        frag.appendChild(a);
+    }
+    const malas = rechazadas.filter(m => m.persona === sesion.persona.id);
+    if (malas.length) {
+        const a = el('div', 'aviso rojo');
+        a.appendChild(el('div', '', '⚠️ El servidor no aceptó ' + (malas.length === 1 ? '1 marca' : malas.length + ' marcas') + '. Avise a un administrador:'));
+        malas.slice(0, 5).forEach(m => a.appendChild(el('div', '', '• ' + horaTexto(horaDeMs(m.hora_celular)) + ' · ' + (m.tipo === 'ENTRADA' ? 'entrada' : 'salida') + ': ' + m.motivo)));
+        const b = el('button', '', 'Quitar este aviso');
+        b.onclick = () => { if (!confirm('¿Quitar el aviso? Esas marcas no llegaron al colegio.')) return;
+            rechazadas = rechazadas.filter(m => m.persona !== sesion.persona.id); guardarLS(CLAVES.RECHAZADAS, rechazadas); pintar(); };
+        a.appendChild(b);
+        frag.appendChild(a);
+    }
+    if (esMovil() && !instalada()) {
+        const a = el('div', 'aviso vino', esIOS() ? 'Para usarla como app: Compartir › Agregar a inicio.' : 'Para usarla como app: menú ⋮ › Instalar app.');
+        frag.appendChild(a);
+    }
+
+    // Estado y botones
+    const t = el('div', 'tarjeta');
+    t.appendChild(el('div', 'estado-dia', 'Hoy, ' + fechaLarga(hoy)));
+    const textoEstado = est.estado === 'EN_SEDE' ? 'En ' + laSede(est.lugar) + ' desde las ' + horaTexto(est.desde)
+        : est.estado === 'EN_TRASLADO' ? 'En traslado hacia ' + laSede(est.destino) + ' desde las ' + horaTexto(est.desde)
+        : (est.desde ? 'Fuera de la jornada · salió a las ' + horaTexto(est.desde) : 'Fuera de la jornada');
+    t.appendChild(el('div', 'estado-texto' + (est.estado === 'EN_SEDE' ? ' en-sede' : est.estado === 'EN_TRASLADO' ? ' en-traslado' : ''), textoEstado));
+    if (est.estado === 'FUERA') {
+        const b = el('button', 'btn-principal', 'Marcar entrada'); b.onclick = () => flujoEntrada(''); t.appendChild(b);
+    } else if (est.estado === 'EN_SEDE') {
+        const b1 = el('button', 'btn-principal', 'Marcar salida'); b1.onclick = () => flujoSalida(est.lugar, false);
+        const b2 = el('button', 'btn-secundario', 'Ir a otra sede'); b2.onclick = () => flujoSalida(est.lugar, true);
+        t.append(b1, b2);
+    } else {
+        const b1 = el('button', 'btn-principal', 'Llegué a ' + laSede(est.destino)); b1.onclick = () => flujoEntrada(est.destino);
+        t.appendChild(b1);
+    }
+    frag.appendChild(t);
+
+    // Marcas de hoy
+    const lm = el('div', 'tarjeta');
+    lm.appendChild(el('h2', '', 'Mis marcas de hoy'));
+    if (!marcas.length) lm.appendChild(el('div', 'vacio', 'Todavía no hay marcas hoy.'));
+    marcas.forEach(m => {
+        const fila = el('div', 'linea-marca');
+        const que = m.tipo === 'ENTRADA' ? 'Entrada · ' + nombreSede(m.lugar)
+            : m.motivo === 'TRASLADO' ? 'Salida de ' + nombreSede(m.lugar) + ' hacia ' + nombreSede(m.destino) : 'Salida · ' + nombreSede(m.lugar);
+        const izq = el('span', '', que);
+        if (m.pendiente) izq.appendChild(el('div', 'pend', 'por enviar'));
+        if (m.tardio) izq.appendChild(el('div', 'pend', 'registrada después'));
+        fila.append(izq, el('span', 'hora', horaTexto(m.hora)));
+        lm.appendChild(fila);
+    });
+    frag.appendChild(lm);
+
+    // ¿Quién está dónde? (solo la sede de cada persona)
+    const q = el('details', 'tarjeta quien');
+    q.appendChild(el('summary', '', '¿Quién está dónde?'));
+    const lista = (estadoServidor && estadoServidor.fecha === hoy && estadoServidor.quien_esta_donde) || [];
+    if (!lista.length) q.appendChild(el('div', 'vacio', 'Sin datos todavía. Se actualiza cuando hay conexión.'));
+    lista.forEach(p => {
+        const yo = p.yo ? Object.assign({}, p, estadoDesde(marcas)) : p;
+        const fila = el('div', 'persona');
+        const donde = yo.estado === 'EN_SEDE' ? 'En ' + laSede(yo.lugar) + ' desde las ' + horaTexto(yo.desde)
+            : yo.estado === 'EN_TRASLADO' ? 'En traslado hacia ' + laSede(yo.destino) : 'Fuera';
+        fila.append(el('span', '', p.nombre + (p.yo ? ' (usted)' : '')), el('span', 'donde' + (yo.estado === 'EN_SEDE' ? ' sede' : ''), donde));
+        q.appendChild(fila);
+    });
+    if (estadoServidor && estadoServidor.recibido) q.appendChild(el('div', 'nota', 'Actualizado a las ' + horaTexto(horaDeMs(estadoServidor.recibido))));
+    frag.appendChild(q);
+
+    frag.appendChild(el('div', 'pie', 'Educación Media · V' + CONFIG.VERSION_APP.replace(/\.0$/, '')));
+    const abierto = v.querySelector('details.quien') && v.querySelector('details.quien').open;
+    v.replaceChildren(frag);
+    if (abierto) v.querySelector('details.quien').open = true;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ *  11. AJUSTES
+ * ══════════════════════════════════════════════════════════════════ */
+$('btnAjustes').onclick = () => abrirHoja(h => {
+    h.appendChild(el('h3', '', 'Ajustes'));
+    const d = el('dl', 'datos');
+    const par = (a, b) => d.append(el('dt', '', a), el('dd', '', b));
+    par('Persona', sesion.persona.nombre);
+    par('Rol', sesion.persona.rol === 'DIRECTIVO' ? 'Directivo' : 'Docente');
+    par('App', 'V' + CONFIG.VERSION_APP);
+    par('Servidor', 'V' + aTexto(sesion.version));
+    par('Instalada', instalada() ? 'Sí' : 'No (se usa en el navegador)');
+    h.appendChild(d);
+
+    h.appendChild(el('div', 'etiqueta', 'Probar ubicación (no registra nada)'));
+    const res = el('div', 'ubic', 'Muestra lo que lee el celular y la sede que sugeriría.');
+    const probar = el('button', 'btn-secundario', 'Probar ubicación');
+    probar.onclick = () => {
+        probar.disabled = true; res.className = 'ubic buscando'; res.textContent = 'Buscando su ubicación…';
+        gpsActivo = escucharUbicacion(u => { res.textContent = 'Precisión ' + Math.round(u.precision) + ' m…'; });
+        gpsActivo.promesa.then(u => {
+            probar.disabled = false; res.className = 'ubic';
+            if (u.error) { res.textContent = textoUbicacion(u); return; }
+            const s = sugerirSedePermanencia(u.lat, u.lon, u.precision, sesion.sedes, cfg().precision_max_m);
+            const motivos = { UNICA: 'Sugeriría ' + laSede(s.sede) + '.', AMBIGUA: 'Está cerca de dos sedes: pediría elegir.',
+                NINGUNA: 'No coincide con ninguna sede.', PRECISION: 'Precisión insuficiente: pediría elegir.' };
+            res.textContent = 'Latitud ' + u.lat.toFixed(6) + ' · longitud ' + u.lon.toFixed(6) + ' · precisión ' + Math.round(u.precision) + ' m. ' + (motivos[s.motivo] || '');
+        });
+    };
+    h.append(probar, res);
+
+    const verAut = el('button', 'btn-secundario', 'Ver la autorización de datos');
+    verAut.onclick = () => alert(sesion.autorizacion.texto);
+    h.appendChild(verAut);
+    h.appendChild(el('div', 'etiqueta', 'Correo del recordatorio, novedades y resumen: llegan con el módulo M2.'));
+
+    const salir = el('button', 'btn-texto', 'Cerrar sesión en este celular');
+    salir.onclick = () => {
+        if (colaPropia().length) return alert('Tiene marcas sin enviar. Conéctese a internet y espere a que salgan antes de cerrar la sesión.');
+        if (!confirm('¿Cerrar la sesión? Para volver a entrar necesitará su código.')) return;
+        [CLAVES.CODIGO, CLAVES.SESION, CLAVES.ESTADO, CLAVES.ENVIADAS].forEach(k => localStorage.removeItem(k));
+        codigo = ''; sesion = null; estadoServidor = null; enviadas = [];
+        cerrarHoja();
+        siguientePantalla();
+    };
+    const cerrar = el('button', 'btn-principal', 'Listo');
+    cerrar.onclick = cerrarHoja;
+    h.append(cerrar, salir);
+});
+
+/* ════════════════════════════════════════════════════════════════════
+ *  12. ARRANQUE Y REINTENTOS
+ * ══════════════════════════════════════════════════════════════════ */
+window.addEventListener('online', () => { enviarCola(); refrescarEstado(true); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { enviarCola(); refrescarEstado(false); pintar(); } });
+setInterval(() => { if (document.visibilityState === 'visible') { enviarCola(); refrescarEstado(false); } }, 60000);
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+siguientePantalla();
+</script>
+</body>
+</html>
